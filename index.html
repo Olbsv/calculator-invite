@@ -60,10 +60,10 @@
     position: relative;
     z-index: 2;
     min-height: 100vh;
-    padding: 42px 6vw;
+    padding: 130px 6vw 42px;
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    justify-content: flex-start;
   }
 
   .brand {
@@ -403,11 +403,12 @@
   const submit = document.getElementById("submit");
   const message = document.getElementById("message");
 
-  // Le jeton arrive dans l'ancre de l'URL (#access_token=...&type=invite),
-  // déposé par le lien du mail d'invitation.
-  const params = new URLSearchParams(location.hash.slice(1));
-  const token = params.get("access_token");
-  const type = params.get("type");
+  // Le mail (envoyé par Supabase) transmet l'adresse et un jeton à usage unique
+  // en paramètres d'URL classiques : ?email=...&token=...
+  const params = new URLSearchParams(location.search);
+  const emailInvite = params.get("email");
+  const jetonOtp = params.get("token");
+  let token = null; // sera rempli après l'échange du jeton ci-dessous
   const erreur = params.get("error_description");
 
   if (erreur) {
@@ -415,10 +416,30 @@
     message.textContent = "Lien expiré ou déjà utilisé : " + decodeURIComponent(erreur.replace(/\+/g, " ")) +
       ". Demandez une nouvelle invitation.";
     nomChamp.disabled = mailChamp.disabled = fonctionChamp.disabled = windowsChamp.disabled = password.disabled = confirmPassword.disabled = true;
-  } else if (!token || (type !== "invite" && type !== "signup" && type !== "recovery")) {
+  } else if (!emailInvite || !jetonOtp) {
     message.className = "message error";
     message.textContent = "Lien invalide ou expiré. Demandez une nouvelle invitation.";
     nomChamp.disabled = mailChamp.disabled = fonctionChamp.disabled = windowsChamp.disabled = password.disabled = confirmPassword.disabled = true;
+  } else {
+    mailChamp.value = emailInvite;
+    // Échange le jeton à usage unique contre une vraie session (access_token).
+    (async () => {
+      try {
+        const r = await fetch(SUPABASE_URL + "/auth/v1/verify", {
+          method: "POST",
+          headers: { "apikey": ANON_KEY, "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "invite", token: jetonOtp, email: emailInvite }),
+        });
+        const d = await r.json();
+        if (!r.ok || !d.access_token) throw new Error(d.msg || d.error_description || "jeton refusé");
+        token = d.access_token;
+        updateRules();
+      } catch (err) {
+        message.className = "message error";
+        message.textContent = "Lien invalide ou expiré. Demandez une nouvelle invitation.";
+        nomChamp.disabled = mailChamp.disabled = fonctionChamp.disabled = windowsChamp.disabled = password.disabled = confirmPassword.disabled = true;
+      }
+    })();
   }
 
   const rules = {
