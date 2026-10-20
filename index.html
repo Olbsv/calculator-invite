@@ -408,7 +408,12 @@
   const params = new URLSearchParams(location.search);
   const emailInvite = params.get("email");
   const jetonOtp = params.get("token");
-  let token = null; // sera rempli après l'échange du jeton ci-dessous
+  // Session obtenue en échangeant le jeton, au clic sur « Activer mon compte » seulement.
+  // L'échange ne se fait PAS à l'ouverture de la page : le jeton est à usage unique, et
+  // l'anti-virus de la messagerie (Microsoft Defender) ouvre les liens des mails avant
+  // la personne, de même qu'une page rechargée ou ouverte une seconde fois. Échangé au
+  // chargement, le jeton était consommé par ces ouvertures : « lien invalide ou expiré ».
+  let token = null;
   const erreur = params.get("error_description");
 
   if (erreur) {
@@ -422,24 +427,25 @@
     nomChamp.disabled = mailChamp.disabled = fonctionChamp.disabled = windowsChamp.disabled = password.disabled = confirmPassword.disabled = true;
   } else {
     mailChamp.value = emailInvite;
-    // Échange le jeton à usage unique contre une vraie session (access_token).
-    (async () => {
-      try {
-        const r = await fetch(SUPABASE_URL + "/auth/v1/verify", {
-          method: "POST",
-          headers: { "apikey": ANON_KEY, "Content-Type": "application/json" },
-          body: JSON.stringify({ type: "invite", token: jetonOtp, email: emailInvite }),
-        });
-        const d = await r.json();
-        if (!r.ok || !d.access_token) throw new Error(d.msg || d.error_description || "jeton refusé");
-        token = d.access_token;
-        updateRules();
-      } catch (err) {
-        message.className = "message error";
-        message.textContent = "Lien invalide ou expiré. Demandez une nouvelle invitation.";
-        nomChamp.disabled = mailChamp.disabled = fonctionChamp.disabled = windowsChamp.disabled = password.disabled = confirmPassword.disabled = true;
-      }
-    })();
+  }
+
+  // Échange le jeton à usage unique contre une vraie session (access_token).
+  // Une seule fois : si la suite échoue, un nouveau clic réutilise la session obtenue.
+  async function ouvrirSession() {
+    if (token) return;
+    const r = await fetch(SUPABASE_URL + "/auth/v1/verify", {
+      method: "POST",
+      headers: { "apikey": ANON_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "invite", token: jetonOtp, email: emailInvite }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.access_token) {
+      const e = new Error("Lien d'invitation expiré ou déjà utilisé. Demandez une nouvelle invitation " +
+        "(seul le dernier mail reçu est valable).");
+      e.lienMort = true;
+      throw e;
+    }
+    token = d.access_token;
   }
 
   const rules = {
@@ -460,7 +466,7 @@
       || nomChamp.value.trim().length === 0
       || !/\S+@\S+\.\S+/.test(mailChamp.value.trim())
       || windowsChamp.value.trim().length !== 3
-      || !token;
+      || !emailInvite || !jetonOtp || !!erreur;
   }
 
   password.addEventListener("input", updateRules);
@@ -493,6 +499,9 @@
     message.textContent = "";
 
     try {
+      // 0. Valide le lien d'invitation (consomme le jeton) et ouvre la session.
+      await ouvrirSession();
+
       // 1. Définit le mot de passe du compte.
       const rMdp = await fetch(SUPABASE_URL + "/auth/v1/user", {
         method: "PUT",
@@ -537,6 +546,12 @@
       submit.textContent = "Compte activé";
     } catch (err) {
       message.className = "message error";
+      if (err.lienMort) {
+        message.textContent = err.message;
+        nomChamp.disabled = mailChamp.disabled = fonctionChamp.disabled = windowsChamp.disabled = password.disabled = confirmPassword.disabled = true;
+        submit.textContent = "Lien expiré";
+        return;
+      }
       message.textContent = "Échec : " + (err.message || err);
       submit.disabled = false;
       submit.textContent = "Activer mon compte";
